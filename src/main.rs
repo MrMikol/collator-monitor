@@ -5,18 +5,16 @@ use sp_core::crypto::{AccountId32, Ss58Codec};
 use sp_core::hashing::twox_128;
 use subxt::{OnlineClient, PolkadotConfig};
 
-const DOT: u128 = 10_000_000_000;
+const DOT_DECIMALS: u128 = 10_000_000_000;
+const KSM_DECIMALS: u128 = 1_000_000_000_000;
 
 #[derive(Parser)]
 struct Args {
-    #[arg(long, default_value = "wss://rpc-asset-hub-polkadot.luckyfriday.io")]
-    rpc: String,
+    #[arg(long)]
+    polkadot_collator: String,
 
     #[arg(long)]
-    collator: String,
-
-    #[arg(long, default_value = "Assethub")]
-    chain_label: String,
+    kusama_collator: String,
 }
 
 #[derive(Debug, Decode)]
@@ -25,12 +23,161 @@ struct Candidate {
     deposit: u128,
 }
 
+struct ChainConfig {
+    name: &'static str,
+    rpc: &'static str,
+    decimals: u128,
+    symbol: &'static str,
+}
+
+struct NetworkConfig {
+    name: &'static str,
+    chains: &'static [ChainConfig],
+}
+
+struct ChainReport {
+    is_active: bool,
+    message: String,
+}
+
+const POLKADOT_CHAINS: &[ChainConfig] = &[
+    ChainConfig {
+        name: "Assethub",
+        rpc: "wss://rpc-asset-hub-polkadot.luckyfriday.io",
+        decimals: DOT_DECIMALS,
+        symbol: "DOT",
+    },
+    ChainConfig {
+        name: "Bridgehub",
+        rpc: "wss://rpc-bridge-hub-polkadot.luckyfriday.io",
+        decimals: DOT_DECIMALS,
+        symbol: "DOT",
+    },
+    ChainConfig {
+        name: "Collectives",
+        rpc: "wss://rpc-collectives-polkadot.luckyfriday.io",
+        decimals: DOT_DECIMALS,
+        symbol: "DOT",
+    },
+    ChainConfig {
+        name: "Coretime",
+        rpc: "wss://rpc-coretime-polkadot.luckyfriday.io",
+        decimals: DOT_DECIMALS,
+        symbol: "DOT",
+    },
+    ChainConfig {
+        name: "People",
+        rpc: "wss://rpc-people-polkadot.luckyfriday.io",
+        decimals: DOT_DECIMALS,
+        symbol: "DOT",
+    },
+];
+
+const KUSAMA_CHAINS: &[ChainConfig] = &[
+    ChainConfig {
+        name: "Assethub",
+        rpc: "wss://rpc-asset-hub-kusama.luckyfriday.io",
+        decimals: KSM_DECIMALS,
+        symbol: "KSM",
+    },
+    ChainConfig {
+        name: "Bridgehub",
+        rpc: "wss://rpc-bridge-hub-kusama.luckyfriday.io",
+        decimals: KSM_DECIMALS,
+        symbol: "KSM",
+    },
+    ChainConfig {
+        name: "Coretime",
+        rpc: "wss://rpc-coretime-kusama.luckyfriday.io",
+        decimals: KSM_DECIMALS,
+        symbol: "KSM",
+    },
+    ChainConfig {
+        name: "People",
+        rpc: "wss://rpc-people-kusama.luckyfriday.io",
+        decimals: KSM_DECIMALS,
+        symbol: "KSM",
+    },
+    ChainConfig {
+        name: "Encointer",
+        rpc: "wss://rpc-encointer-kusama.luckyfriday.io",
+        decimals: KSM_DECIMALS,
+        symbol: "KSM",
+    },
+];
+
+const NETWORKS: &[NetworkConfig] = &[
+    NetworkConfig {
+        name: "Polkadot",
+        chains: POLKADOT_CHAINS,
+    },
+    NetworkConfig {
+        name: "Kusama",
+        chains: KUSAMA_CHAINS,
+    },
+];
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    let monitored = AccountId32::from_ss58check(&args.collator)?;
 
-    let api = OnlineClient::<PolkadotConfig>::from_url(args.rpc).await?;
+    let polkadot_collator =
+        AccountId32::from_ss58check(&args.polkadot_collator)?;
+
+    let kusama_collator =
+        AccountId32::from_ss58check(&args.kusama_collator)?;
+
+    for network in NETWORKS {
+        let monitored = match network.name {
+            "Polkadot" => &polkadot_collator,
+            "Kusama" => &kusama_collator,
+            _ => unreachable!(),
+        };
+
+        let mut active_count = 0;
+        let mut active_chains: Vec<&str> = Vec::new();
+        let mut reports: Vec<String> = Vec::new();
+
+        for chain in network.chains {
+            match process_chain(chain, monitored).await {
+                Ok(report) => {
+                    if report.is_active {
+                        active_count += 1;
+                        active_chains.push(chain.name);
+                    }
+
+                    reports.push(report.message);
+                }
+                Err(err) => {
+                    reports.push(format!(
+                        "Error processing {}: {}",
+                        chain.name, err
+                    ));
+                }
+            }
+        }
+
+        println!("\n{}", network.name);
+        println!(
+            "• Collating on {}/{} chains - {}",
+            active_count,
+            network.chains.len(),
+            active_chains.join(", ")
+        );
+
+        for report in reports {
+            println!("• {}", report);
+        }
+    }
+
+    Ok(())
+}
+
+async fn process_chain(
+    chain: &ChainConfig,
+    monitored: &AccountId32,
+) -> Result<ChainReport> {
+    let api = OnlineClient::<PolkadotConfig>::from_url(chain.rpc).await?;
     let at = api.at_current_block().await?;
     let storage = at.storage();
 
@@ -49,40 +196,37 @@ async fn main() -> Result<()> {
         bail!("candidate list is empty");
     }
 
-    let in_invulnerables = invulnerables.iter().any(|a| a == &monitored);
-    let in_candidates = candidates.iter().any(|c| c.who == monitored);
-    let is_in_list = in_invulnerables || in_candidates;
+    let in_invulnerables = invulnerables.iter().any(|a| a == monitored);
+    let candidate = candidates.iter().find(|c| &c.who == monitored);
+    let is_in_list = in_invulnerables || candidate.is_some();
 
     let max = candidates.iter().max_by_key(|c| c.deposit).unwrap();
     let min = candidates.iter().min_by_key(|c| c.deposit).unwrap();
 
-    let status = if in_invulnerables {
-        "invulnerable".to_string()
-    } else if let Some(candidate) = candidates.iter().find(|c| c.who == monitored) {
-        format!("candidate with bid {} DOT", fmt_dot(candidate.deposit))
+    let message = if is_in_list {
+        format!(
+            "Max bid on {} is {} {} and min bid is {} {}",
+            chain.name,
+            fmt_token(max.deposit, chain.decimals),
+            chain.symbol,
+            fmt_token(min.deposit, chain.decimals),
+            chain.symbol,
+        )
     } else {
-        "not in the collator list".to_string()
+        format!(
+            "We have dropped out of {}, max bid is {} {} and min bid is {} {}",
+            chain.name,
+            fmt_token(max.deposit, chain.decimals),
+            chain.symbol,
+            fmt_token(min.deposit, chain.decimals),
+            chain.symbol,
+        )
     };
 
-    println!("Monitored collator is {status}");
-
-    if is_in_list {
-        println!(
-            "Max bid on {} is {} DOT and min bid is {} DOT",
-            args.chain_label,
-            fmt_dot(max.deposit),
-            fmt_dot(min.deposit),
-        );
-    } else {
-        println!(
-            "We have dropped out of {}, max bid is {} DOT and min bid is {} DOT",
-            args.chain_label,
-            fmt_dot(max.deposit),
-            fmt_dot(min.deposit),
-        );
-    }
-
-    Ok(())
+    Ok(ChainReport {
+        is_active: is_in_list,
+        message,
+    })
 }
 
 fn storage_key(pallet: &str, item: &str) -> Vec<u8> {
@@ -92,6 +236,10 @@ fn storage_key(pallet: &str, item: &str) -> Vec<u8> {
     key
 }
 
-fn fmt_dot(plancks: u128) -> String {
-    format!("{}.{:02}", plancks / DOT, ((plancks % DOT) * 100) / DOT)
+fn fmt_token(amount: u128, decimals: u128) -> String {
+    format!(
+        "{}.{:02}",
+        amount / decimals,
+        ((amount % decimals) * 100) / decimals
+    )
 }
