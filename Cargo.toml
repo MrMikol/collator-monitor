@@ -11,3 +11,6 @@ subxt = "0.50.1"
 sp-core = "38"
 sp-crypto-hashing = "0.1"
 parity-scale-codec = { version = "3", features = ["derive"] }
+reqwest = { version = "0.12", features = ["json"] }
+serde_json = "1"
+dotenvy = "0.15"
