@@ -116,7 +116,7 @@ async fn main() -> Result<()> {
     dotenvy::from_path("/etc/opt/app/slack/.env")?;
     dotenvy::from_path("/etc/opt/app/collator/.env")?;
 
-    let slack_webhook = env::var("SLACK_WEBHOOK")?;
+    let slack_webhook = env::var("SLACK_WEBHOOK_URL")?;
 
     let polkadot_collator =
         AccountId32::from_ss58check(&env::var("POLKADOT_COLLATOR")?)?;
