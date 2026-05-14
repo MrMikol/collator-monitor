@@ -1,21 +1,14 @@
 use anyhow::{bail, Result};
-use clap::Parser;
 use parity_scale_codec::Decode;
+use serde_json::json;
 use sp_core::crypto::{AccountId32, Ss58Codec};
 use sp_core::hashing::twox_128;
+use std::env;
 use subxt::{OnlineClient, PolkadotConfig};
 
 const DOT_DECIMALS: u128 = 10_000_000_000;
 const KSM_DECIMALS: u128 = 1_000_000_000_000;
 
-#[derive(Parser)]
-struct Args {
-    #[arg(long)]
-    polkadot_collator: String,
-
-    #[arg(long)]
-    kusama_collator: String,
-}
 
 #[derive(Debug, Decode)]
 struct Candidate {
@@ -106,6 +99,7 @@ const KUSAMA_CHAINS: &[ChainConfig] = &[
     },
 ];
 
+
 const NETWORKS: &[NetworkConfig] = &[
     NetworkConfig {
         name: "Polkadot",
@@ -119,13 +113,18 @@ const NETWORKS: &[NetworkConfig] = &[
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args = Args::parse();
+    dotenvy::from_path("/etc/opt/app/slack/.env")?;
+    dotenvy::from_path("/etc/opt/app/collator/.env")?;
+
+    let slack_webhook = env::var("SLACK_WEBHOOK")?;
 
     let polkadot_collator =
-        AccountId32::from_ss58check(&args.polkadot_collator)?;
+        AccountId32::from_ss58check(&env::var("POLKADOT_COLLATOR")?)?;
 
     let kusama_collator =
-        AccountId32::from_ss58check(&args.kusama_collator)?;
+        AccountId32::from_ss58check(&env::var("KUSAMA_COLLATOR")?)?;
+
+    let mut slack_message = String::new();
 
     for network in NETWORKS {
         let monitored = match network.name {
@@ -151,24 +150,35 @@ async fn main() -> Result<()> {
                 Err(err) => {
                     reports.push(format!(
                         "Error processing {}: {}",
-                        chain.name, err
+                        chain.name,
+                        err
                     ));
                 }
             }
         }
 
-        println!("\n{}", network.name);
-        println!(
-            "• Collating on {}/{} chains - {}",
+        slack_message.push_str(&format!(
+            "*{}*\n",
+            network.name
+        ));
+
+        slack_message.push_str(&format!(
+            "• Collating on {}/{} chains - {}\n",
             active_count,
             network.chains.len(),
             active_chains.join(", ")
-        );
+        ));
 
         for report in reports {
-            println!("• {}", report);
+            slack_message.push_str(&format!("• {}\n", report));
         }
+
+        slack_message.push('\n');
     }
+
+    println!("{}", slack_message);
+
+    send_to_slack(&slack_webhook, &slack_message).await?;
 
     Ok(())
 }
@@ -242,4 +252,22 @@ fn fmt_token(amount: u128, decimals: u128) -> String {
         amount / decimals,
         ((amount % decimals) * 100) / decimals
     )
+}
+
+async fn send_to_slack(webhook: &str, message: &str) -> Result<()> {
+    let client = reqwest::Client::new();
+
+    let response = client
+        .post(webhook)
+        .json(&json!({
+            "text": message
+        }))
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        bail!("slack webhook failed: {}", response.status());
+    }
+
+    Ok(())
 }
